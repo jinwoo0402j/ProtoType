@@ -109,6 +109,7 @@ public class CombatManager : MonoBehaviour
         {
             Debug.LogWarning("타겟 선택 시작 불가: 플레이어, 적 또는 카드 정보가 유효하지 않습니다.");
             if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("카드 사용 불가", 1.5f);
+            ClearTargetSelectionState(); // 상태 초기화 추가
             return;
         }
 
@@ -121,10 +122,8 @@ public class CombatManager : MonoBehaviour
             currentTargetableParts = enemy.GetTargetableParts();
             if (currentTargetableParts.Count == 0)
             {
-                Debug.LogWarning(string.Format("{0}에게 타겟 가능한 부위가 없습니다.", enemy.enemyName));
+                Debug.LogWarning(string.Format("{0}에게 타겟 가능한 부위가 없습니다. 공격할 수 없습니다.", enemy.enemyName));
                 if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("타겟 부위 없음!", 2f);
-                // player.PlayCard(selectedCardIndexToPlay, enemy, null); // 타겟 없이 사용 시도 (기본 타겟팅)
-                // 또는 여기서 카드 사용 자체를 막을 수도 있습니다.
                 ClearTargetSelectionState(); // 상태 초기화
                 return;
             }
@@ -136,22 +135,42 @@ public class CombatManager : MonoBehaviour
             for (int i = 0; i < currentTargetableParts.Count; i++)
             {
                 EnemyPart part = currentTargetableParts[i];
-                message.AppendFormat("[{0}] {1} ({2}/{3})\n", i + 1, part.partName, part.currentHealth, part.maxHealth);
+                // 사용자가 입력할 숫자 (1부터 시작)와 부위 정보를 함께 표시
+                message.AppendFormat("[{0}] {1} ({2}/{3}) {4} {5}\n", 
+                                    i + 1, 
+                                    part.partName, 
+                                    part.currentHealth, 
+                                    part.maxHealth, 
+                                    part.isCorePart ? "(코어)" : "",
+                                    part.currentBlock > 0 ? string.Format("(방어: {0})", part.currentBlock) : "");
             }
             if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage(message.ToString(), 0); // 계속 표시
             Debug.Log(message.ToString());
         }
-        else // 공격 카드가 아니면 부위 선택 없이 바로 사용 (예: 방어 카드)
+        else // 공격 카드가 아니면 부위 선택 없이 바로 사용 (예: 방어, 드로우 카드)
         { 
             Debug.Log(string.Format("{0} 카드는 부위 선택 없이 바로 사용됩니다.", selectedCardData.cardName));
-            bool played = player.PlayCard(selectedCardIndexToPlay, enemy, null); // 타겟 부위 없이 카드 사용
-            if (!played && selectedCardData.cost > player.currentEnergy) // PlayCard가 false를 반환하는 주된 이유는 에너지 부족
+            // targetEnemyPartIndex를 null로 전달
+            bool played = player.PlayCard(selectedCardIndexToPlay, enemy, null); 
+            if (played)
+            {
+                UpdatePlayerHandUI();
+                UpdateEnemyStatusUI(); // 적에게 직접 영향은 없지만, 만약의 경우를 대비
+                 // 비공격 카드로 적을 죽일 수 있는 경우가 있다면 (예: 반사 데미지 버프 후 적이 자해하는 카드)
+                if (enemy.IsDefeated())
+                {
+                    currentState = CombatState.Victory;
+                    enemy.Die(string.Format("{0} (으)로 인한 승리", selectedCardData.cardName));
+                    if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("승리!", 0);
+                }
+            }
+            else if (selectedCardData.cost > player.currentEnergy) 
             {
                 if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("에너지가 부족합니다!", 2f);
             }
-            UpdatePlayerHandUI();
-            UpdateEnemyStatusUI();
             ClearTargetSelectionState(); // 사용 후 상태 초기화
+            // 비공격 카드 사용 후에는 바로 PlayerTurn 상태 유지 (CombatManager의 Update 루프에서 다음 입력 대기)
+            // 또는, 카드 사용 후 자동으로 턴이 종료되는 규칙이라면 여기서 EndPlayerTurn() 호출
         }
     }
 
@@ -191,30 +210,56 @@ public class CombatManager : MonoBehaviour
     void StartEnemyTurn()
     {
         currentState = CombatState.EnemyTurn;
-        Debug.Log("적의 턴입니다.");
-        UpdateEnemyStatusUI(); // 적 턴 시작 직전 (주로 의도 확인) UI 업데이트
+        Debug.Log("========= 적의 턴 시작 =========");
 
-        EnemyIntent intent = enemy.GetNextAction(); // 이 줄은 사실 GetStatusRepresentation에 포함되므로 없어도 될 수 있음
-        Debug.Log(string.Format("적의 의도: {0}", intent.ToString()));
+        enemy.ResetAllPartBlocks();       // 1. 모든 부위 방어력 초기화
+        enemy.ChooseAllPartIntents();     // 2. 모든 부위 행동 결정
+        UpdateEnemyStatusUI();            // 3. 변경된 적 의도 UI에 반영 (플레이어가 볼 수 있도록)
 
-        enemy.PerformAction(player);
-        UpdateEnemyStatusUI(); // 적 행동 후 (체력 변경 등) UI 업데이트
+        // 적 행동 실행 전 잠시 대기 (플레이어가 의도를 볼 시간)
+        // 실제 게임에서는 Invoke나 코루틴으로 지연을 줄 수 있습니다.
+        Debug.Log("적이 행동을 준비합니다..."); 
+        // yield return new WaitForSeconds(1.0f); // 예시: 코루틴 사용 시
 
-        // 플레이어가 죽었는지 확인
-        if (player.currentHealth <= 0)
+        enemy.ExecuteAllPartIntents(player); // 4. 적의 모든 부위 행동 실행
+
+        UpdatePlayerHandUI();   // 플레이어 상태 UI 업데이트 (피격 등 반영)
+        UpdateEnemyStatusUI();  // 적 상태 UI 업데이트 (행동 후 변화 반영)
+
+        // 5. 플레이어 사망 확인
+        if (player.currentHealth <= 0) // player.IsDead() 같은 메서드가 있다면 그것 사용
         {
+            previousCombatState = currentState;
             currentState = CombatState.Defeat;
-            previousCombatState = currentState; // 상태 변경 시 이전 상태도 업데이트
             Debug.Log("패배... 플레이어가 쓰러졌습니다.");
-            if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("패배...", 0); // 0은 계속 표시
-            UpdatePlayerHandUI();
-            UpdateEnemyStatusUI();
-            // TODO: 게임 오버 로직, 입력 비활성화 등
-            return;
+            if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("패배...", 0); 
+            // player.Die(); // 플레이어 사망 처리 메서드가 있다면 호출
+            return; // 전투 종료
         }
 
-        Debug.Log("적이 턴을 마쳤습니다.");
-        previousCombatState = currentState; // 상태 변경 전 저장
+        // 6. 적 사망 확인
+        if (enemy.IsDefeated())
+        {
+            previousCombatState = currentState;
+            currentState = CombatState.Victory;
+            // enemy.Die()는 IsDefeated() 내부 또는 여기서 호출될 수 있으나, Enemy.cs의 Die는 이미 로그를 남기므로 중복 호출 주의
+            // enemy.Die()가 호출되지 않았다면 여기서 호출: enemy.Die("적 턴 후 플레이어에 의해 패배"); 
+            // -> Enemy.cs의 Die 메서드는 isDead 플래그만 설정하고 로그를 남기므로, CombatManager에서 호출하는 것이 적절.
+            //    단, enemy.IsDefeated()가 true이면 enemy.Die()를 여기서 또 호출할 필요는 없음.
+            //    만약 enemy.Die()가 아직 호출되지 않은 상태에서 IsDefeated()가 true가 될 수 있다면 (예: isDead 플래그만으로 판단)
+            //    여기서 enemy.Die()를 호출해야 함.
+            //    현재 Enemy.IsDefeated()는 isDead 플래그를 먼저 체크하므로, 만약 Die()가 이미 호출되었다면 또 할 필요는 없음.
+            //    하지만 명확성을 위해, IsDefeated()가 true이고 enemy.isDead가 false이면 Die()를 호출하는 것이 안전할 수 있음.
+            if (!enemy.isDead) { // 만약 IsDefeated()가 true를 반환했지만 Die()가 아직 호출 안된 경우 대비
+                 enemy.Die("적의 턴 종료 후 패배 조건 만족");
+            }
+            Debug.Log("승리! 적을 물리쳤습니다.");
+            if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("승리!", 0);
+            return; // 전투 종료
+        }
+
+        Debug.Log("========= 적의 턴 종료 =========");
+        previousCombatState = currentState; 
         StartPlayerTurn(); // 다시 플레이어 턴 시작
     }
 
@@ -236,36 +281,45 @@ public class CombatManager : MonoBehaviour
 
     void Update() // 키보드 입력 처리
     {
-        if (currentState == CombatState.Victory || currentState == CombatState.Defeat || currentState == CombatState.DeckViewing)
+        // 덱 뷰 상태에서는 ESC만 처리
+        if (currentState == CombatState.DeckViewing)
         {
-            if (currentState == CombatState.DeckViewing && Input.GetKeyDown(KeyCode.Escape))
+            if (Input.GetKeyDown(KeyCode.Escape))
             {
                 OnViewDeckButtonPressed(); 
             }
             return; 
         }
 
+        // 승리, 패배, 일시정지 상태에서는 입력 무시 (덱 뷰잉 제외)
+        if (currentState == CombatState.Victory || currentState == CombatState.Defeat || currentState == CombatState.Paused)
+        {
+            return; 
+        }
+
         if (currentState == CombatState.PlayerTurn)
         {
+            // E 키로 턴 종료
             if (Input.GetKeyDown(KeyCode.E))
             {
-                Debug.Log("E 키 입력: 턴 종료 시도");
                 PlayerEndTurn();
             }
-
-            for (int i = 0; i < 5; i++) 
+            // 숫자 키로 카드 사용 시도 (1번부터)
+            for (int i = 1; i <= 5; i++)
             {
-                if (Input.GetKeyDown(KeyCode.Alpha1 + i))
+                if (Input.GetKeyDown(KeyCode.Alpha0 + i))
                 {
-                    if (i < player.hand.Count) 
+                    if (player.hand.Count >= i)
                     {
-                         Debug.Log(string.Format("{0}번 키 입력: 핸드의 {0}번째 카드 사용 시도", i + 1));
-                         StartTargetSelection(i); 
-                         break; 
+                        Debug.Log(string.Format("{0}번 카드 선택 시도.", i));
+                        StartTargetSelection(i - 1); // 0-indexed로 변환하여 전달
+                        // StartTargetSelection이 상태를 SelectingTarget으로 바꿀 수 있으므로, 이후 입력은 다음 프레임에 처리
+                        return; // 한 번에 하나의 카드 선택/타겟팅 프로세스만 진행
                     }
                     else
                     {
-                        Debug.LogWarning(string.Format("핸드에 {0}번째 카드가 없습니다.", i + 1));
+                        if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("해당 번호의 카드가 없습니다.", 1.5f);
+                        Debug.LogWarning(string.Format("{0}번 카드가 핸드에 없습니다. 핸드 카드 수: {1}", i, player.hand.Count));
                     }
                 }
             }
@@ -275,59 +329,65 @@ public class CombatManager : MonoBehaviour
             if (Input.GetKeyDown(KeyCode.Escape))
             {
                 CancelTargetSelection();
-                return; // 추가 입력 처리 방지
             }
-            if (Input.GetKeyDown(KeyCode.E)) // 턴 종료 키로도 타겟 선택 취소
+            // 숫자 키로 타겟 부위 선택 (1번부터)
+            for (int i = 1; i <= currentTargetableParts.Count; i++)
             {
-                CancelTargetSelection();
-                PlayerEndTurn(); // 그리고 턴 종료
-                return;
-            }
-
-            for (int i = 0; i < currentTargetableParts.Count; i++)
-            {
-                if (Input.GetKeyDown(KeyCode.Alpha1 + i))
+                if (Input.GetKeyDown(KeyCode.Alpha0 + i))
                 {
-                    EnemyPart selectedPart = currentTargetableParts[i];
-                    Debug.Log(string.Format("부위 '{0}' 선택됨. 카드 사용 실행.", selectedPart.partName));
-                    
-                    if (gameMessageDisplay != null) gameMessageDisplay.ClearMessage(); // 타겟 선택 메시지 제거
-                    
-                    bool playedSuccessfully = player.PlayCard(selectedCardIndexToPlay, enemy, selectedPart);
-                    UpdatePlayerHandUI();
-                    UpdateEnemyStatusUI();
+                    int targetListIndex = i - 1; // 사용자가 보는 1-based 인덱스를 리스트의 0-based 인덱스로 변환
+                    EnemyPart selectedPartObject = currentTargetableParts[targetListIndex];
+                    int actualPartIndexInEnemyList = enemy.parts.IndexOf(selectedPartObject);
 
-                    if (!playedSuccessfully && selectedCardData != null && selectedCardData.cost > player.currentEnergy) // 실패 주 원인이 에너지 부족일 경우
-                    {
-                        if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("에너지가 부족합니다!", 2f);
-                    }
-                    else if(!playedSuccessfully) // 기타 이유로 실패 (예: 카드가 null, targetEnemy가 null 등 Player.PlayCard 내부에서 처리)
-                    {
-                        if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("카드 사용 실패!", 2f);
+                    if (actualPartIndexInEnemyList == -1)
+                    { // 이런 경우는 거의 없어야 하지만 방어 코드
+                        Debug.LogError(string.Format("선택된 부위 '{0}'를 Enemy의 전체 부위 리스트에서 찾을 수 없습니다!", selectedPartObject.partName));
+                        if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("부위 선택 오류!", 2f);
+                        CancelTargetSelection(); // 타겟팅 취소
+                        return;
                     }
 
-                    // 승리/패배 조건 확인은 PlayCard 이후에 항상 수행
-                    if (enemy != null && enemy.isDead)
-                    {
-                        currentState = CombatState.Victory;
-                        Debug.Log("승리! 적을 물리쳤습니다.");
-                        if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("승리!", 0); 
-                        // previousCombatState = currentState; // 더 이상 SelectingTarget으로 돌아갈 필요 없음
-                    }
-                    // 플레이어 패배 조건은 Enemy 턴 이후에 주로 확인되지만, 여기서도 확인할 수 있음
-                    else if (player != null && player.currentHealth <= 0) 
-                    { 
-                        currentState = CombatState.Defeat; 
-                        Debug.Log("패배... 플레이어가 쓰러졌습니다."); 
-                        if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("패배...", 0); 
-                    }
-                    else
-                    {
-                        currentState = CombatState.PlayerTurn; // 행동 후 플레이어 턴으로 복귀
-                    }
+                    Debug.Log(string.Format("부위 '{0}' (전체 목록에서 {1}번째 인덱스) 선택됨. 카드 사용 시도: {2}", 
+                                        selectedPartObject.partName, actualPartIndexInEnemyList, selectedCardData.cardName ));
                     
-                    ClearTargetSelectionState();
-                    break; // 하나의 타겟 선택 후 루프 종료
+                    bool cardPlayed = player.PlayCard(selectedCardIndexToPlay, enemy, actualPartIndexInEnemyList);
+
+                    if (cardPlayed)
+                    {
+                        UpdatePlayerHandUI();
+                        UpdateEnemyStatusUI();
+                        if (gameMessageDisplay != null) gameMessageDisplay.ClearMessage(); // 타겟팅 메시지 제거
+
+                        if (enemy.IsDefeated())
+                        {
+                            previousCombatState = currentState;
+                            currentState = CombatState.Victory;
+                            if(!enemy.isDead) enemy.Die(string.Format("플레이어의 '{0}' 카드 공격으로 사망", selectedCardData.cardName));
+                            if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("승리!", 0);
+                            // ClearTargetSelectionState(); // 승리/패배 시에는 상태 초기화 불필요할 수 있음
+                            return; // 전투 종료
+                        }
+                        // 플레이어가 죽었는지 확인 (예: 반사 데미지)
+                        if (player.currentHealth <= 0) 
+                        {
+                            previousCombatState = currentState;
+                            currentState = CombatState.Defeat;
+                            if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("패배...", 0);
+                            return; // 전투 종료
+                        }
+                        currentState = CombatState.PlayerTurn; // 다음 행동을 위해 플레이어 턴으로 복귀
+                    }
+                    else // 카드 사용 실패 (예: 에너지 부족 - 이미 PlayCard에서 메시지 처리했을 수 있음)
+                    {
+                        // Player.PlayCard에서 에너지 부족 메시지를 이미 띄웠을 것이므로, 여기서는 추가 메시지 불필요할 수 있음
+                        // 하지만, 만약 다른 이유로 실패했다면 여기서 메시지 처리
+                        if (gameMessageDisplay != null && selectedCardData.cost > player.currentEnergy) { /* 이미 처리됨 */ }
+                        else if (gameMessageDisplay != null) { gameMessageDisplay.ShowMessage("카드 사용 불가!", 1.5f); }
+                        // 실패 시 타겟팅 상태 유지할지, PlayerTurn으로 돌릴지 결정.
+                        // 현재는 실패해도 PlayerTurn으로 돌아가도록 아래 ClearTargetSelectionState()가 호출됨.
+                    }
+                    ClearTargetSelectionState(); // 카드 사용 시도 후 타겟팅 관련 상태 초기화
+                    return; // 한 번의 타겟 선택 및 카드 사용 처리 후 Update 종료
                 }
             }
         }

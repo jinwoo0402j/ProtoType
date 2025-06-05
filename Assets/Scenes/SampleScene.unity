@@ -287,6 +287,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   maxHealth: 100
   currentHealth: 0
+  currentBlock: 0
   maxEnergy: 3
   currentEnergy: 0
   deck: []
@@ -881,9 +882,25 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   enemyName: "\uAE30\uBCF8 \uC2AC\uB77C\uC784"
-  maxHealth: 50
-  currentHealth: 0
-  actionPatterns: []
+  parts: []
+  isDead: 0
+  enemyPartDataList:
+  - partName: "\uBA38\uB9AC"
+    maxHealth: 30
+    isCore: 1
+    possibleIntents:
+    - intentType: 0
+      value: 15
+      description: "\uACF5\uACA9\uD55C\uB2E4"
+    partPrefab: {fileID: 0}
+  - partName: "\uC67C\uD314"
+    maxHealth: 20
+    isCore: 0
+    possibleIntents:
+    - intentType: 0
+      value: 15
+      description: "\uACF5\uACA9"
+    partPrefab: {fileID: 0}
 --- !u!4 &342964435
 Transform:
   m_ObjectHideFlags: 0

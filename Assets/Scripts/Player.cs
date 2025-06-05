@@ -88,25 +88,25 @@ public class Player : MonoBehaviour
     }
 
     // cardIndex는 핸드에서의 인덱스를 의미합니다.
-    // targetPart가 null이면 Enemy의 기본 TakeDamage 로직(주로 몸통)을 따릅니다.
-    public bool PlayCard(int cardIndex, Enemy targetEnemy, EnemyPart targetPart = null)
+    // targetPart가 null이면 Enemy의 기본 TakeDamage 로직(주로 몸통)을 따릅니다. -> targetEnemyPartIndex로 변경
+    public bool PlayCard(int handCardIndex, Enemy targetEnemy, int? targetEnemyPartIndex = null) // EnemyPart targetPart = null -> int? targetEnemyPartIndex = null
     {
-        if (cardIndex < 0 || cardIndex >= hand.Count)
+        if (handCardIndex < 0 || handCardIndex >= hand.Count)
         {
             Debug.LogError("잘못된 카드 인덱스입니다.");
             return false; // 실패 반환
         }
 
-        CardData cardToPlay = hand[cardIndex];
+        CardData cardToPlay = hand[handCardIndex];
 
         if (currentEnergy >= cardToPlay.cost)
         {
             currentEnergy -= cardToPlay.cost;
-            hand.RemoveAt(cardIndex);
+            hand.RemoveAt(handCardIndex);
             discardPile.Add(cardToPlay);
 
             Debug.Log(string.Format("플레이어 카드 사용: {0}, 남은 에너지: {1}", cardToPlay.ToString(), currentEnergy));
-            ApplyCardEffect(cardToPlay, targetEnemy, targetPart);
+            ApplyCardEffect(cardToPlay, targetEnemy, targetEnemyPartIndex); // targetPart -> targetEnemyPartIndex
             return true; // 성공 반환
         }
         else
@@ -116,23 +116,25 @@ public class Player : MonoBehaviour
         }
     }
 
-    // targetPart가 null이면 Enemy의 기본 TakeDamage 로직을 따르도록 하거나, 특정 기본 부위를 공격합니다.
-    void ApplyCardEffect(CardData card, Enemy targetEnemy, EnemyPart targetPart = null)
+    // targetPart가 null이면 Enemy의 기본 TakeDamage 로직을 따르도록 하거나, 특정 기본 부위를 공격합니다. -> targetEnemyPartIndex로 변경
+    void ApplyCardEffect(CardData card, Enemy targetEnemy, int? targetEnemyPartIndex = null) // EnemyPart targetPart = null -> int? targetEnemyPartIndex = null
     {
         switch (card.effectType)
         {
             case CardEffectType.Attack:
                 if (targetEnemy != null && !targetEnemy.isDead) // 적이 살아있는지 확인
                 {
-                    if (targetPart != null && !targetPart.isDestroyed) // 특정 부위가 타겟으로 지정되었고, 파괴되지 않았다면
+                    if (targetEnemyPartIndex.HasValue) // 특정 부위 인덱스가 타겟으로 지정되었고
                     {
-                        Debug.Log(string.Format("{0}의 부위 '{1}'에게 {2} 피해를 입힙니다.", targetEnemy.enemyName, targetPart.partName, card.effectValue));
-                        targetEnemy.TakeDamageToPart(targetPart, card.effectValue);
+                        // Enemy.cs의 TakeDamageToPart(int partIndex, int amount) 호출
+                        Debug.Log(string.Format("{0}의 부위 인덱스 '{1}'에게 {2} 피해를 입힙니다.", targetEnemy.enemyName, targetEnemyPartIndex.Value, card.effectValue));
+                        targetEnemy.TakeDamageToPart(targetEnemyPartIndex.Value, card.effectValue);
                     }
-                    else // 특정 부위가 지정되지 않았거나, 지정된 부위가 파괴된 경우 -> 적의 기본 피해 처리 로직 사용
+                    else // 특정 부위 인덱스가 지정되지 않은 경우 (공격 카드지만, CombatManager에서 여기까지 오면 안됨)
                     {
-                        Debug.Log(string.Format("{0}에게 {1} 피해를 입힙니다. (기본 타겟팅)", targetEnemy.enemyName, card.effectValue));
-                        targetEnemy.TakeDamage(card.effectValue); // Enemy.cs의 TakeDamage가 알아서 적절한 부위를 타겟
+                        Debug.LogWarning(string.Format("공격 카드 '{0}'에 대한 타겟 부위 인덱스가 지정되지 않았습니다. 공격이 적용되지 않습니다.", card.cardName));
+                        // 또는, 기존처럼 Enemy의 기본 TakeDamage(amount)를 호출할 수도 있지만, 현재 Enemy.cs에는 해당 메서드가 명확한 부위 타겟팅 없이 존재하지 않을 수 있음.
+                        // targetEnemy.TakeDamage(card.effectValue); // 이 줄은 Enemy.cs의 상황에 따라 주석 처리하거나 수정 필요
                     }
                 }
                 else
