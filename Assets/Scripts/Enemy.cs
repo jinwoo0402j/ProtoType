@@ -25,6 +25,7 @@ public class Enemy : MonoBehaviour
     public bool isDead = false;
 
     public List<PartData> enemyPartDataList = new List<PartData>(); // 인스펙터에서 설정할 부위 데이터
+    [SerializeField] public List<Transform> partUIPositionPlaceholders = new List<Transform>(); // 각 부위 UI가 표시될 위치 지정용 오브젝트
 
     // private EnemyIntent nextAction; // 부위별 행동으로 대체되므로 제거
     // public List<EnemyIntent> actionPatterns = new List<EnemyIntent>(); // 부위별 행동으로 대체되므로 제거

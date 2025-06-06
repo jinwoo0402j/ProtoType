@@ -2,13 +2,14 @@ using UnityEngine;
 // using UnityEngine.UI; // HandDisplay 스크립트를 통하므로 CombatManager에서 직접 UI 네임스페이스가 필요 없을 수 있습니다.
 using System.Collections.Generic; // List 사용을 위해 추가
 using System.Text; // StringBuilder 사용을 위해 추가
+using System; // Action 대리자를 사용하기 위해 추가
 
 public class CombatManager : MonoBehaviour
 {
     public Player player;
     public Enemy enemy;
     private HandDisplay handDisplay; // HandDisplay 스크립트 참조
-    private EnemyStatusDisplay enemyStatusDisplay; // EnemyStatusDisplay 스크립트 참조
+    [SerializeField] private EnemyUILayout enemyUILayout; // 적 부위 UI 레이아웃 참조
     private GameMessageDisplay gameMessageDisplay; // GameMessageDisplay 스크립트 참조
     private DeckViewUI deckViewUI; // DeckViewUI 스크립트 참조
 
@@ -20,7 +21,6 @@ public class CombatManager : MonoBehaviour
     // 타겟 선택 관련 변수
     private int selectedCardIndexToPlay = -1;
     private CardData selectedCardData = null; 
-    private List<EnemyPart> currentTargetableParts = new List<EnemyPart>();
 
     void Start()
     {
@@ -47,10 +47,10 @@ public class CombatManager : MonoBehaviour
             Debug.LogWarning("CombatManager: HandDisplay UI object not found in scene. Player hand will not be shown on screen.");
         }
 
-        enemyStatusDisplay = FindObjectOfType<EnemyStatusDisplay>(); // EnemyStatusDisplay 찾기
-        if (enemyStatusDisplay == null)
+        enemyUILayout = FindObjectOfType<EnemyUILayout>();
+        if (enemyUILayout == null)
         {
-            Debug.LogWarning("CombatManager: EnemyStatusDisplay UI object not found in scene. Enemy status will not be shown on screen.");
+            Debug.LogError("CombatManager: EnemyUILayout을 씬에서 찾을 수 없습니다. 적 부위 UI가 표시되지 않습니다.");
         }
 
         gameMessageDisplay = FindObjectOfType<GameMessageDisplay>(); // GameMessageDisplay 찾기
@@ -80,6 +80,13 @@ public class CombatManager : MonoBehaviour
             Debug.LogError("Player 또는 Enemy가 CombatManager에 설정되지 않았습니다. 전투를 시작할 수 없습니다.");
             return; // player나 enemy가 없으면 StartCombat() 호출하지 않음
         }
+
+        // 적 부위 UI 설정
+        if (enemyUILayout != null)
+        {
+            enemyUILayout.SetupLayout(enemy.parts, enemy.partUIPositionPlaceholders, OnPartSelected);
+        }
+
         StartCombat();
         UpdatePlayerHandUI(); // 전투 시작 시 (보통 핸드가 비어있거나 초기 상태) UI 업데이트
         UpdateEnemyStatusUI(); // 전투 시작 시 적 상태 UI 업데이트
@@ -105,6 +112,13 @@ public class CombatManager : MonoBehaviour
 
     void StartTargetSelection(int cardIndexInHand)
     {
+        // 이미 타겟 선택 중이면 새로운 타겟 선택을 시작하지 않음
+        if (currentState == CombatState.SelectingTarget)
+        {
+            if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("이미 타겟을 선택 중입니다. 부위를 선택하거나 Esc로 취소하세요.", 2f);
+            return;
+        }
+
         if (player == null || enemy == null || enemy.isDead || cardIndexInHand < 0 || cardIndexInHand >= player.hand.Count)
         {
             Debug.LogWarning("타겟 선택 시작 불가: 플레이어, 적 또는 카드 정보가 유효하지 않습니다.");
@@ -119,8 +133,8 @@ public class CombatManager : MonoBehaviour
         // 공격 카드이고, 적이 살아있을 때만 부위 선택
         if (selectedCardData.effectType == CardEffectType.Attack)
         {
-            currentTargetableParts = enemy.GetTargetableParts();
-            if (currentTargetableParts.Count == 0)
+            var targetableParts = enemy.GetTargetableParts();
+            if (targetableParts.Count == 0)
             {
                 Debug.LogWarning(string.Format("{0}에게 타겟 가능한 부위가 없습니다. 공격할 수 없습니다.", enemy.enemyName));
                 if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("타겟 부위 없음!", 2f);
@@ -128,24 +142,19 @@ public class CombatManager : MonoBehaviour
                 return;
             }
 
-            previousCombatState = currentState; // PlayerTurn 상태 저장
+            previousCombatState = currentState;
             currentState = CombatState.SelectingTarget;
             
-            StringBuilder message = new StringBuilder("타겟 부위 선택 (Esc: 취소):\n");
-            for (int i = 0; i < currentTargetableParts.Count; i++)
+            // UI를 통해 타겟 선택 모드로 전환
+            if (enemyUILayout != null)
             {
-                EnemyPart part = currentTargetableParts[i];
-                // 사용자가 입력할 숫자 (1부터 시작)와 부위 정보를 함께 표시
-                message.AppendFormat("[{0}] {1} ({2}/{3}) {4} {5}\n", 
-                                    i + 1, 
-                                    part.partName, 
-                                    part.currentHealth, 
-                                    part.maxHealth, 
-                                    part.isCorePart ? "(코어)" : "",
-                                    part.currentBlock > 0 ? string.Format("(방어: {0})", part.currentBlock) : "");
+                enemyUILayout.SetAllPartsTargetable(true);
             }
-            if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage(message.ToString(), 0); // 계속 표시
-            Debug.Log(message.ToString());
+            if (gameMessageDisplay != null)
+            {
+                gameMessageDisplay.ShowMessage("공격할 부위를 선택하세요. (Esc: 취소)", 0); // 계속 표시
+            }
+            Debug.Log("공격할 부위를 선택하세요. UI에서 클릭하세요.");
         }
         else // 공격 카드가 아니면 부위 선택 없이 바로 사용 (예: 방어, 드로우 카드)
         { 
@@ -174,6 +183,42 @@ public class CombatManager : MonoBehaviour
         }
     }
 
+    // EnemyPartUI의 버튼이 클릭될 때 호출될 콜백 메서드
+    void OnPartSelected(int partIndex)
+    {
+        if (currentState != CombatState.SelectingTarget)
+        {
+            Debug.LogWarning("OnPartSelected가 호출되었지만, 타겟 선택 상태가 아닙니다.");
+            return;
+        }
+
+        EnemyPart targetPart = enemy.parts[partIndex];
+        Debug.Log(string.Format("UI 클릭으로 부위 선택됨: {0} ({1}번째 인덱스)", targetPart.partName, partIndex));
+
+        bool played = player.PlayCard(selectedCardIndexToPlay, enemy, partIndex);
+        
+        // 타겟 선택 모드 종료 및 상태 정리
+        currentState = CombatState.PlayerTurn;
+        ClearTargetSelectionState(); // UI 비활성화 등을 처리
+
+        if (played)
+        {
+            UpdatePlayerHandUI();
+            UpdateEnemyStatusUI(); 
+            
+            if (enemy.IsDefeated())
+            {
+                currentState = CombatState.Victory;
+                enemy.Die(string.Format("{0} (으)로 인한 승리", selectedCardData.cardName));
+                if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("승리!", 0);
+            }
+        }
+        else if (selectedCardData != null && selectedCardData.cost > player.currentEnergy)
+        {
+             if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("에너지가 부족합니다!", 2f);
+        }
+    }
+
     void CancelTargetSelection()
     {
         if (currentState == CombatState.SelectingTarget)
@@ -181,15 +226,18 @@ public class CombatManager : MonoBehaviour
             Debug.Log("타겟 선택이 취소되었습니다.");
             if (gameMessageDisplay != null) gameMessageDisplay.ClearMessage();
             currentState = CombatState.PlayerTurn; // 또는 previousCombatState
-            ClearTargetSelectionState();
+            ClearTargetSelectionState(); // 여기서 모든 UI 상태를 원래대로 돌림
         }
     }
 
     void ClearTargetSelectionState()
     {
+        if (enemyUILayout != null)
+        {
+            enemyUILayout.SetAllPartsTargetable(false);
+        }
         selectedCardIndexToPlay = -1;
         selectedCardData = null;
-        currentTargetableParts.Clear();
     }
 
     // 이 메서드는 UI나 테스트 코드에서 호출될 것입니다.
@@ -273,124 +321,52 @@ public class CombatManager : MonoBehaviour
 
     private void UpdateEnemyStatusUI() // 새로운 메서드
     {
-        if (enemy != null && enemyStatusDisplay != null)
+        if (enemyUILayout != null)
         {
-            enemyStatusDisplay.UpdateStatus(enemy.GetStatusRepresentation());
+            enemyUILayout.UpdateAllPartStatuses();
         }
     }
 
     void Update() // 키보드 입력 처리
     {
-        // 덱 뷰 상태에서는 ESC만 처리
+        // 덱 뷰 상태에서는 다른 입력 무시
         if (currentState == CombatState.DeckViewing)
         {
             if (Input.GetKeyDown(KeyCode.Escape))
             {
-                OnViewDeckButtonPressed(); 
+                OnDeckViewCloseButtonPressed();
             }
-            return; 
+            return; // 덱 뷰 중에는 다른 키 입력 처리 안함
         }
 
-        // 승리, 패배, 일시정지 상태에서는 입력 무시 (덱 뷰잉 제외)
-        if (currentState == CombatState.Victory || currentState == CombatState.Defeat || currentState == CombatState.Paused)
+        // 타겟 선택 중 Esc 키로 취소
+        if (currentState == CombatState.SelectingTarget && Input.GetKeyDown(KeyCode.Escape))
         {
-            return; 
+            CancelTargetSelection();
+            return; // 취소 후 다른 입력 처리 방지
         }
+        
+        // 전투가 끝나거나, 타겟 선택 중이거나, 플레이어 턴이 아니면 턴 관련 입력 무시
+        if (currentState != CombatState.PlayerTurn) return;
 
-        if (currentState == CombatState.PlayerTurn)
+        // 'E' 키를 눌러 턴 종료
+        if (Input.GetKeyDown(KeyCode.E))
         {
-            // E 키로 턴 종료
-            if (Input.GetKeyDown(KeyCode.E))
-            {
-                PlayerEndTurn();
-            }
-            // 숫자 키로 카드 사용 시도 (1번부터)
-            for (int i = 1; i <= 5; i++)
-            {
-                if (Input.GetKeyDown(KeyCode.Alpha0 + i))
-                {
-                    if (player.hand.Count >= i)
-                    {
-                        Debug.Log(string.Format("{0}번 카드 선택 시도.", i));
-                        StartTargetSelection(i - 1); // 0-indexed로 변환하여 전달
-                        // StartTargetSelection이 상태를 SelectingTarget으로 바꿀 수 있으므로, 이후 입력은 다음 프레임에 처리
-                        return; // 한 번에 하나의 카드 선택/타겟팅 프로세스만 진행
-                    }
-                    else
-                    {
-                        if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("해당 번호의 카드가 없습니다.", 1.5f);
-                        Debug.LogWarning(string.Format("{0}번 카드가 핸드에 없습니다. 핸드 카드 수: {1}", i, player.hand.Count));
-                    }
-                }
-            }
+            PlayerEndTurn();
         }
-        else if (currentState == CombatState.SelectingTarget)
+
+        // 'D' 키를 눌러 덱 보기 (디버그/테스트용)
+        if (Input.GetKeyDown(KeyCode.D))
         {
-            if (Input.GetKeyDown(KeyCode.Escape))
-            {
-                CancelTargetSelection();
-            }
-            // 숫자 키로 타겟 부위 선택 (1번부터)
-            for (int i = 1; i <= currentTargetableParts.Count; i++)
-            {
-                if (Input.GetKeyDown(KeyCode.Alpha0 + i))
-                {
-                    int targetListIndex = i - 1; // 사용자가 보는 1-based 인덱스를 리스트의 0-based 인덱스로 변환
-                    EnemyPart selectedPartObject = currentTargetableParts[targetListIndex];
-                    int actualPartIndexInEnemyList = enemy.parts.IndexOf(selectedPartObject);
-
-                    if (actualPartIndexInEnemyList == -1)
-                    { // 이런 경우는 거의 없어야 하지만 방어 코드
-                        Debug.LogError(string.Format("선택된 부위 '{0}'를 Enemy의 전체 부위 리스트에서 찾을 수 없습니다!", selectedPartObject.partName));
-                        if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("부위 선택 오류!", 2f);
-                        CancelTargetSelection(); // 타겟팅 취소
-                        return;
-                    }
-
-                    Debug.Log(string.Format("부위 '{0}' (전체 목록에서 {1}번째 인덱스) 선택됨. 카드 사용 시도: {2}", 
-                                        selectedPartObject.partName, actualPartIndexInEnemyList, selectedCardData.cardName ));
-                    
-                    bool cardPlayed = player.PlayCard(selectedCardIndexToPlay, enemy, actualPartIndexInEnemyList);
-
-                    if (cardPlayed)
-                    {
-                        UpdatePlayerHandUI();
-                        UpdateEnemyStatusUI();
-                        if (gameMessageDisplay != null) gameMessageDisplay.ClearMessage(); // 타겟팅 메시지 제거
-
-                        if (enemy.IsDefeated())
-                        {
-                            previousCombatState = currentState;
-                            currentState = CombatState.Victory;
-                            if(!enemy.isDead) enemy.Die(string.Format("플레이어의 '{0}' 카드 공격으로 사망", selectedCardData.cardName));
-                            if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("승리!", 0);
-                            // ClearTargetSelectionState(); // 승리/패배 시에는 상태 초기화 불필요할 수 있음
-                            return; // 전투 종료
-                        }
-                        // 플레이어가 죽었는지 확인 (예: 반사 데미지)
-                        if (player.currentHealth <= 0) 
-                        {
-                            previousCombatState = currentState;
-                            currentState = CombatState.Defeat;
-                            if (gameMessageDisplay != null) gameMessageDisplay.ShowMessage("패배...", 0);
-                            return; // 전투 종료
-                        }
-                        currentState = CombatState.PlayerTurn; // 다음 행동을 위해 플레이어 턴으로 복귀
-                    }
-                    else // 카드 사용 실패 (예: 에너지 부족 - 이미 PlayCard에서 메시지 처리했을 수 있음)
-                    {
-                        // Player.PlayCard에서 에너지 부족 메시지를 이미 띄웠을 것이므로, 여기서는 추가 메시지 불필요할 수 있음
-                        // 하지만, 만약 다른 이유로 실패했다면 여기서 메시지 처리
-                        if (gameMessageDisplay != null && selectedCardData.cost > player.currentEnergy) { /* 이미 처리됨 */ }
-                        else if (gameMessageDisplay != null) { gameMessageDisplay.ShowMessage("카드 사용 불가!", 1.5f); }
-                        // 실패 시 타겟팅 상태 유지할지, PlayerTurn으로 돌릴지 결정.
-                        // 현재는 실패해도 PlayerTurn으로 돌아가도록 아래 ClearTargetSelectionState()가 호출됨.
-                    }
-                    ClearTargetSelectionState(); // 카드 사용 시도 후 타겟팅 관련 상태 초기화
-                    return; // 한 번의 타겟 선택 및 카드 사용 처리 후 Update 종료
-                }
-            }
+            OnViewDeckButtonPressed();
         }
+
+        // 숫자 키 1-5로 카드 사용 시작
+        if (Input.GetKeyDown(KeyCode.Alpha1)) { StartTargetSelection(0); }
+        else if (Input.GetKeyDown(KeyCode.Alpha2)) { StartTargetSelection(1); }
+        else if (Input.GetKeyDown(KeyCode.Alpha3)) { StartTargetSelection(2); }
+        else if (Input.GetKeyDown(KeyCode.Alpha4)) { StartTargetSelection(3); }
+        else if (Input.GetKeyDown(KeyCode.Alpha5)) { StartTargetSelection(4); }
     }
 
     // 테스트를 위한 간단한 진행 예시 (Unity 에디터에서 버튼 등에 연결하거나, 직접 호출)
@@ -464,5 +440,16 @@ public class CombatManager : MonoBehaviour
         // 덱 뷰 상태에 따라 다른 UI 요소들의 업데이트가 필요하다면 여기서 호출
         UpdatePlayerHandUI(); 
         UpdateEnemyStatusUI();
+    }
+
+    // "덱 보기" 버튼에 연결될 메서드
+    public void OnDeckViewCloseButtonPressed()
+    {
+        if (currentState == CombatState.DeckViewing)
+        {
+            deckViewUI.Hide();
+            currentState = previousCombatState; // 이전 전투 상태로 복귀
+            Debug.Log(string.Format("덱 뷰를 닫습니다. 이전 상태({0})로 돌아갑니다.", currentState));
+        }
     }
 } 
